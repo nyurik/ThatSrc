@@ -1,5 +1,77 @@
-module.exports = ( function( $, vv ) {
+module.exports = ( function( $, vv, wb, vp, dv ) {
 	'use strict';
+
+	// FIXME!  HACK!
+	// Not sure how to register our own parser type
+	// Not sure how to get the ApiBasedValueParser base
+	// The first function is taken verbatim from Wikibase extension:
+	//    repo/resources/parsers/getApiBasedValueParserConstructor.js
+
+	/**
+	 * Returns a constructor for a ValueParser which parses using the given wb.api.ParseValueCaller.
+	 *
+	 * This is necessary since valueParser.ValueParserStore returns a constructor, not an instance, and
+	 * we have to pass in the RepoApi wrapped in a wikibase.api.ParseValueCaller.
+	 *
+	 * @param {wikibase.api.ParseValueCaller} apiValueParser
+	 * @return {Function}
+	 */
+	var getApiBasedValueParserConstructor = function ( apiValueParser ) {
+		/**
+		 * Base constructor for objects representing a value parser which is doing an API request to the
+		 * 'parseValue' API module.
+		 * @constructor
+		 * @extends valueParsers.ValueParser
+		 */
+		return util.inherit( 'WbApiBasedValueParser', vp.ValueParser, {
+			/**
+			 * The key of the related API parser.
+			 * @type {string}
+			 */
+			API_VALUE_PARSER_ID: null,
+
+			/**
+			 * @see valueParsers.ValueParser.parse
+			 *
+			 * @param {string} rawValue
+			 * @return {Object} jQuery Promise
+			 *         Resolved parameters:
+			 *         - {dataValues.DataValues}
+			 *         Rejected parameters:
+			 *         - {string} HTML error message.
+			 */
+			parse: function ( rawValue ) {
+				var deferred = $.Deferred();
+
+				apiValueParser.parseValues( this.API_VALUE_PARSER_ID, [ rawValue ], this._options )
+					.done( function ( results ) {
+						var result;
+
+						if ( results.length === 0 ) {
+							deferred.reject( 'Parse API returned an empty result set.' );
+							return;
+						}
+
+						try {
+							result = dv.newDataValue( results[ 0 ].type, results[ 0 ].value );
+							deferred.resolve( result );
+						} catch ( error ) {
+							deferred.reject( error.message );
+						}
+					} )
+					.fail( function ( error ) {
+						deferred.reject( error.detailedMessage || error.code );
+					} );
+
+				return deferred.promise();
+			}
+
+		} );
+	};
+
+	// End copied code (should be removed in the future)
+
+
 
 	var PARENT = vv.Expert;
 
@@ -11,6 +83,28 @@ module.exports = ( function( $, vv ) {
 	vv.experts.MultilineTextValue = vv.expert( 'MultilineTextValue', PARENT, function() {
 		PARENT.apply( this, arguments );
 		this.$input = $( '<div>' ).attr( 'dir', 'ltr' );
+
+		// FIXME!  HACK!
+		// Not sure how to register our own parser type
+		// Not sure how to get the ApiBasedValueParser base
+		var parserStore = this.viewState()._view.options.parserStore;
+		if (!parserStore._parsersForDataTypes.hasOwnProperty('multilinetext')) {
+
+			var repoConfig = mw.config.get( 'wbRepo' ),
+				repoApiUrl = repoConfig.url + repoConfig.scriptPath + '/api.php',
+				mwApi = wb.api.getLocationAgnosticMwApi( repoApiUrl ),
+				repoApi = new wb.api.RepoApi( mwApi );
+
+			var apiCaller = new wb.api.ParseValueCaller( repoApi ),
+				ApiBasedValueParser = getApiBasedValueParserConstructor( apiCaller );
+
+			let datatype = util.inherit(
+				ApiBasedValueParser,
+				{ API_VALUE_PARSER_ID: 'multilinetext' }
+			);
+			// this.options.dataValueType
+			parserStore.registerDataTypeParser(datatype, 'multilinetext');
+		}
 	}, {
 		/**
 		 * The nodes of the input element. The input element will be used to display the value
@@ -27,19 +121,6 @@ module.exports = ( function( $, vv ) {
 		 * @inheritdoc
 		 */
 		init: function() {
-			// FIXME!  HACK!
-			// Not sure how to register our own parser type
-			// Not sure how to get the ApiBasedValueParser base
-			var parserStore = this.viewState()._view.options.parserStore;
-			if (!parserStore._parsersForDataTypes.hasOwnProperty('multilinetext')) {
-				let datatype = util.inherit(
-					parserStore._parsersForDataValueTypes.string,
-					{ API_VALUE_PARSER_ID: 'multilinetext' }
-				);
-			  // this.options.dataValueType
-				parserStore.registerDataTypeParser(datatype, 'multilinetext');
-			}
-
 			var notifier = this._viewNotifier;
 
 			mw.loader.using('ext.codeEditor.ace').then(() => {
@@ -158,4 +239,4 @@ module.exports = ( function( $, vv ) {
 
 	return vv.experts.MultilineTextValue;
 
-}( jQuery, jQuery.valueview ) );
+}( jQuery, jQuery.valueview, wikibase, valueParsers, dataValues ) );
